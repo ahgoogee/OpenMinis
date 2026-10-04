@@ -62,6 +62,9 @@ object AgentTools {
         if (!isHelper && delegateEnabled) {
             add(subAgentTaskDefinition(rosterNames))
         }
+        // [T-ctx-compression-config] Not offered to helpers; the dispatcher
+        // refuses the call for them.
+        if (!isHelper) add(compactContextDefinition())
     }
 
     /**
@@ -217,5 +220,31 @@ object AgentTools {
         ),
         required = listOf("tool_title"),
         propertyOrdering = listOf("tool_title", "scope", "keywords"),
+    )
+
+    /**
+     * [T-ctx-compression-config] The model's own compaction trigger, so it can
+     * compact at a break in the work instead of wherever the token count lands.
+     *
+     * `focus` reaches the summarizer as an emphasis list on top of its standing
+     * instructions, never as a replacement for them.
+     */
+    private fun compactContextDefinition(): AgentToolDefinition = AgentToolDefinition(
+        name = "compact_context",
+        description = "Compact the conversation so far into a summary, freeing context space, and carry on " +
+            "working. The earlier messages are REPLACED by that summary; the most recent turns are kept " +
+            "verbatim, and you continue in the same session.\n\n" +
+            "Call it when the context is filling up — you will be reminded as it approaches the limit — " +
+            "and preferably at a natural break between sub-goals rather than in the middle of one. " +
+            "The summary is produced by a separate model call; use `focus` to tell it what matters for " +
+            "the work that is still ahead (files in play, decisions already made, anything that would be " +
+            "expensive to rediscover). After it returns, keep going — do not restart the task or re-run " +
+            "discovery.",
+        parameters = mapOf(
+            "tool_title" to AgentToolParam("string", "A concise 5-10 word summary of what this tool call does, shown to the user (e.g. 'Compact context before refactor step'). Use the same language as the user."),
+            "focus" to AgentToolParam("string", "Optional but recommended. What the summary must preserve or emphasise: the current sub-goal, files and paths in play, decisions already made, constraints, or anything you would otherwise have to rediscover. Passed to the summarizer as an emphasis hint on top of its standing instructions."),
+        ),
+        required = listOf("tool_title"),
+        propertyOrdering = listOf("tool_title", "focus"),
     )
 }

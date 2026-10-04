@@ -13,6 +13,7 @@ import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.ui.graphics.Color
 
 // [T-android-split-chat] Pure tool-label / duration / timestamp formatting
@@ -62,6 +63,8 @@ internal fun toolAccentColor(toolName: String): Color = when (toolName) {
     "read_image" -> Color(0xFFAF52DE)
     "memory_write", "memory_get" -> Color(0xFFFF2D55)
     "web_search" -> Color(0xFF32ADE6)    // iOS: .cyan for search
+    // [T-ctx-compression-config] The model's own compaction request.
+    "compact_context" -> Color(0xFF5AC8FA)
     // [T-sub-agents-v1] Current name + the pre-rename one still in shipped transcripts.
     "subagent_task", "delegate_task", "agent_status" -> HelperAccentStatic  // iOS: HelperAccent.color (electric violet)
     else -> Color(0xFF8E8E93)
@@ -77,6 +80,7 @@ internal fun toolIconFor(toolName: String) = when (toolName) {
     "read_image" -> Icons.Default.Image                // iOS: photo
     "memory_write", "memory_get" -> Icons.Default.Psychology // iOS: brain.head.profile
     "web_search" -> Icons.Default.Search               // iOS: magnifyingglass
+    "compact_context" -> Icons.Default.Tune
     "subagent_task", "delegate_task", "agent_status" -> Icons.Default.Groups  // iOS: person.2.wave.2
     else -> Icons.Default.Build
 }
@@ -137,6 +141,7 @@ internal fun friendlyToolTitleFor(toolName: String?): String = when (toolName) {
     "memory_write" -> "Write Memory"
     "memory_get" -> "Read Memory"
     "web_search" -> "Search Web"
+    "compact_context" -> "Compact Context"
     else -> toolName
         .split('_')
         .filter { it.isNotEmpty() }
@@ -154,6 +159,7 @@ internal fun toolDisplayName(toolName: String): String = when (toolName) {
     "memory_write" -> "memory"
     "memory_get" -> "memory"
     "web_search" -> "search"
+    "compact_context" -> "context compressor"
     "subagent_task", "delegate_task", "agent_status" -> "agent"
     else -> toolName
 }
@@ -171,6 +177,7 @@ internal fun toolTitleLabel(toolName: String): String = when (toolName) {
     "read_image" -> "Minis is reading Image"
     "memory_write", "memory_get" -> "Minis is using Memory"
     "web_search" -> "Minis is using Search"
+    "compact_context" -> "Minis is compacting Context"
     "subagent_task", "delegate_task", "agent_status" -> "Minis is using an Agent"
     else -> "Minis is using ${toolDisplayName(toolName)}"
 }

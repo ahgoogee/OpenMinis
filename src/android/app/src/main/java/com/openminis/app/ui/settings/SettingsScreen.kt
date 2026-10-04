@@ -45,6 +45,7 @@ import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.Terminal
+import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -87,6 +88,9 @@ fun SettingsScreen(
     /** [T-p2-agent-settings] Settings › Agents (delegation on/off), below Memory. */
     onAgentsClick: () -> Unit = {},
     onAgentToolsClick: () -> Unit = {},
+    // [T-ctx-compression-config] Context Compaction page, right below Agent
+    // Tools in the Agent Runtime section.
+    onContextCompactionClick: () -> Unit = {},
     // [T-mcp-integration-android] MCP Integrations page, listed directly below
     // Memory. Default no-op for callers that haven't wired the route yet.
     onMcpClick: () -> Unit = {},
@@ -203,6 +207,15 @@ fun SettingsScreen(
                     title = stringResource(R.string.settings_agents),
                     subtitle = stringResource(R.string.settings_agents_subtitle),
                     onClick = onAgentsClick,
+                )
+                // [T-ctx-compression-config] Context Compaction, directly
+                // below Agents.
+                SettingsItem(
+                    icon = Icons.Outlined.Tune,
+                    iconColor = Color(0xFF32ADE6),
+                    title = stringResource(R.string.settings_context_compaction),
+                    subtitle = stringResource(R.string.settings_context_compaction_subtitle),
+                    onClick = onContextCompactionClick,
                 )
                 SettingsItem(
                     icon = Icons.Outlined.Extension,

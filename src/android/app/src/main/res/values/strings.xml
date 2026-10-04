@@ -2101,6 +2101,14 @@
     <string name="agent_open_detail">Open agent details</string>
     <string name="settings_agent_tools">Agent Tools</string>
     <string name="settings_agent_tools_subtitle">Which optional tools the agent may use</string>
+    <!-- [T-ctx-compression-config] Settings › Agent Runtime › Context Compaction -->
+    <string name="settings_context_compaction">Context Compaction</string>
+    <string name="settings_context_compaction_subtitle">Remind the agent as the context fills up</string>
+    <string name="ctx_compaction_soft_header">Soft limit</string>
+    <string name="ctx_compaction_soft_switch">Remind the agent before it fills up</string>
+    <string name="ctx_compaction_soft_switch_subtitle">Adds a reminder to the conversation once context crosses the soft limit, so the agent can compact at a break it picks.</string>
+    <string name="ctx_compaction_soft_footer">The hard limit is unchanged: the app compacts on its own when it is reached.</string>
+    <string name="ctx_compaction_soft_line_label">Soft limit: %1$d%% of the context window</string>
     <string name="agent_tools_browser">Browser Use</string>
     <string name="agent_tools_browser_footer">Browse the web in the in-app browser: open pages, read them, click and type. Stable and on by default. When off, the tool is removed from every conversation — the model does not see it at all.</string>
     <string name="agent_tools_agents">Agents</string>

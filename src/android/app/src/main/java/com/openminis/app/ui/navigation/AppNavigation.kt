@@ -173,6 +173,8 @@ object Routes {
     const val SUB_AGENT_DETAIL = "sub_agent/{agentId}"
     /** [T-tools-granular-switches] Settings > Agent Runtime > Tools. */
     const val AGENT_TOOLS = "agent_tools"
+    /** [T-ctx-compression-config] Settings > Agent Runtime > Context Compaction. */
+    const val CONTEXT_COMPACTION = "context_compaction"
     /** [T-mcp-integration-android] MCP Integrations management screen. */
     const val MCP = "mcp"
     /** [T-soul-md] SOUL.md editor. */
@@ -621,6 +623,7 @@ fun AppNavigation(
                 onMemoryClick = { navController.safeNavigate(Routes.MEMORY) },
                 onAgentsClick = { navController.safeNavigate(Routes.AGENTS) },
                 onAgentToolsClick = { navController.safeNavigate(Routes.AGENT_TOOLS) },
+                onContextCompactionClick = { navController.safeNavigate(Routes.CONTEXT_COMPACTION) },
                 onMcpClick = { navController.safeNavigate(Routes.MCP) },
                 onSoulClick = { navController.safeNavigate(Routes.SOUL) },
                 onPermissionsClick = { navController.safeNavigate(Routes.PERMISSIONS) },
@@ -1466,6 +1469,15 @@ fun AppNavigation(
 
         composable(Routes.AGENT_TOOLS) {
             com.openminis.app.ui.settings.AgentToolsSettingsScreen(
+                onBack = { navController.safePopBackStack() },
+            )
+        }
+
+        // [T-ctx-compression-config] Soft-compaction line. Its own screen: the
+        // rows in Agent Tools gate tool availability, while this one owns a
+        // numeric line and the reminder policy.
+        composable(Routes.CONTEXT_COMPACTION) {
+            com.openminis.app.ui.settings.ContextCompactionSettingsScreen(
                 onBack = { navController.safePopBackStack() },
             )
         }

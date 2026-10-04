@@ -302,6 +302,10 @@ class MinisApp : Application(), ImageLoaderFactory {
         // Activity context.
         com.openminis.app.data.AutoCompactPrefs.prime(this)
 
+        // [T-ctx-compression-config] Same arrangement for the soft-compaction
+        // line, read from the agent loop.
+        com.openminis.app.data.ContextCompressionPrefs.prime(this)
+
         // T283: install NDK signal handler for native crashes (SIGSEGV/
         // SIGABRT/SIGBUS/SIGFPE/SIGILL/SIGSYS). Writes a one-shot text
         // report to filesDir/logs/native-crash-<stamp>.log before re-raising

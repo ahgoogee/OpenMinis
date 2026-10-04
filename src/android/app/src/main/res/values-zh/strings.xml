@@ -1908,6 +1908,14 @@
     <string name="agent_open_detail">打开代理任务详情</string>
     <string name="settings_agent_tools">可用工具</string>
     <string name="settings_agent_tools_subtitle">允许助手使用哪些可选工具</string>
+    <!-- [T-ctx-compression-config] 设置 › 智能体运行时 › 上下文压缩 -->
+    <string name="settings_context_compaction">上下文压缩</string>
+    <string name="settings_context_compaction_subtitle">上下文将满时提前提醒助手</string>
+    <string name="ctx_compaction_soft_header">软压缩</string>
+    <string name="ctx_compaction_soft_switch">接近上限前提醒助手</string>
+    <string name="ctx_compaction_soft_switch_subtitle">上下文越过软下限后向对话注入一条提醒，由助手自己挑时机压缩。</string>
+    <string name="ctx_compaction_soft_footer">硬压缩不受影响，到达上限时照常自动压缩。</string>
+    <string name="ctx_compaction_soft_line_label">软下限：上下文窗口的 %1$d%%</string>
     <string name="agent_tools_browser">浏览器</string>
     <string name="agent_tools_browser_footer">在应用内浏览器中访问网页：打开页面、阅读内容、点击和输入。功能已稳定，默认开启。关闭后该工具会从所有对话中移除，模型完全看不到它。</string>
     <string name="agent_tools_agents">代理任务</string>

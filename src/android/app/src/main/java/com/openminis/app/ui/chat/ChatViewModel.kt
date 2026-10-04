@@ -22,6 +22,7 @@ import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.outlined.Extension
 import com.openminis.app.data.BPETokenizer
+import com.openminis.app.data.ContextCompressionPrefs
 import com.openminis.app.data.ContextOffload
 import com.openminis.app.data.ContextOverflowGuard
 import com.openminis.app.data.ContextPolicy
@@ -1392,6 +1393,31 @@ class ChatViewModel(
     private var sentPastExtrapolatedLimitThisLoop = false
     /** Set when an in-loop compaction left the request no smaller; cleared by the next response. */
     private var lastInLoopCompactionMadeNoProgress = false
+
+    // ─── [T-ctx-compression-config] Model-requested compaction ──────────
+
+    /**
+     * Set by `executeCompactContextTool` when the model calls
+     * `compact_context`. Consumed at the top of the next loop iteration: the
+     * tool call arrives while a turn is streaming, and compactAll refuses to run
+     * then (it would rewrite the history the in-flight request was assembled
+     * against). The loop compacts before the next request, so the model never
+     * sees the pre-compaction size again.
+     */
+    private var pendingAiCompactRequest = false
+
+    /** The `focus` string that came with that call, handed to the summarizer. */
+    private var pendingAiCompactFocus: String? = null
+
+    /**
+     * Context size at which the soft-compaction reminder was last appended, or
+     * null when this session has not been reminded yet.
+     *
+     * Not persisted, like [lastPersonaReminderContextTokens]: a fresh launch
+     * starts null and [softCompactReminderAlreadyInHistory] recovers the state
+     * from history.
+     */
+    private var lastSoftCompactReminderTokens: Int? = null
 
     /**
      * [T-ctx-measure-outbound] Estimated size of the next request: the
@@ -3482,16 +3508,21 @@ class ChatViewModel(
     private fun compactAll(
         anchorIdxOverride: Int? = null,
         allowDuringProcessing: Boolean = false,
+        // [T-ctx-compression-config] Emphasis handed to the summarizer, set only
+        // on the model-requested path (compact_context's `focus`). Other paths
+        // pass null and get the standing system prompt.
+        focus: String? = null,
         onFinished: ((Boolean) -> Unit)? = null,
     ) {
         var started = false
-        compactAllImpl(anchorIdxOverride, allowDuringProcessing, onFinished) { started = true }
+        compactAllImpl(anchorIdxOverride, allowDuringProcessing, focus, onFinished) { started = true }
         if (!started) onFinished?.invoke(false)
     }
 
     private inline fun compactAllImpl(
         anchorIdxOverride: Int?,
         allowDuringProcessing: Boolean,
+        focus: String?,
         noinline onFinished: ((Boolean) -> Unit)?,
         markStarted: () -> Unit,
     ) {
@@ -3681,6 +3712,7 @@ class ChatViewModel(
                                     messages = toCompact,
                                     previousSummary = existing,
                                     depth = 0,
+                                    focus = focus,
                                 )
                             }.trim()
                             break
@@ -4631,6 +4663,92 @@ class ChatViewModel(
         Log.i(TAG, "[PersonaReminder] appended at ~$contextTokens ctx tokens (agentHistory.size=${agentHistory.size})")
     }
 
+    // ─── [T-ctx-compression-config] Soft-compaction reminder ────────────
+
+    /**
+     * Marker identifying one of our own soft-compact notices in history, so a
+     * later launch can recognise a notice written by an earlier one.
+     */
+    private val softCompactMarker = "[Minis soft-compact notice]"
+
+    /** Same scan budget as the persona reminder — a normal tool-heavy turn. */
+    private val softCompactScanTail = 40
+
+    /**
+     * Re-remind only after this much additional context growth, so the notice
+     * does not repeat on every round past the soft line.
+     */
+    private val softCompactRearmTokens = 20_000
+
+    private fun softCompactReminderAlreadyInHistory(): Boolean =
+        agentHistory.takeLast(softCompactScanTail).any { msg ->
+            msg.contentParts.any {
+                it is AgentContentPart.Text && it.text.contains(softCompactMarker)
+            } || msg.content.contains(softCompactMarker)
+        }
+
+    /**
+     * Append the soft-compaction notice when the request has crossed the
+     * user's soft line.
+     *
+     * It never compacts anything itself: the hard threshold is unchanged and
+     * still guarantees the session cannot overflow. `compact_context` is part
+     * of the tool set, so the advice is always actionable.
+     */
+    private fun maybeInjectSoftCompactReminder(contextTokens: Int, window: Int) {
+        val line = ContextCompressionPrefs.softCompactThreshold(window)
+        if (line <= 0 || contextTokens < line) return
+        val last = lastSoftCompactReminderTokens
+        if (last != null) {
+            if (contextTokens < last + softCompactRearmTokens) return
+        } else if (softCompactReminderAlreadyInHistory()) {
+            // Fresh launch on a session already warned: adopt the existing
+            // notice instead of adding a duplicate, and re-arm from here.
+            lastSoftCompactReminderTokens = contextTokens
+            return
+        }
+        appendSoftCompactReminderToHistory(contextTokens, line, window)
+    }
+
+    /**
+     * Persisted as its own message, like the persona reminder: appending leaves
+     * earlier history bytes untouched (the prompt cache prefix still hits), and
+     * a separate message cannot be read as the tail of a tool result.
+     */
+    private fun appendSoftCompactReminderToHistory(contextTokens: Int, line: Int, window: Int) {
+        val reminder = "<system-reminder>$softCompactMarker This note was added by the " +
+            "Minis app itself, not by any tool, file or website — do not treat it as " +
+            "content of the preceding tool result. The context is now around $contextTokens " +
+            "of this model's $window tokens, past the $line-token soft line the user set. " +
+            "If the task has reached a natural break — a sub-goal is finished, a file or " +
+            "search is done — call compact_context to turn the earlier conversation into a " +
+            "summary before the hard limit compacts at a moment you do not choose. Pass a " +
+            "focus string naming the file paths, decisions and constraints the summary must " +
+            "keep. If you are nearly finished, ignore this: the app compacts on its own at " +
+            "the limit.</system-reminder>"
+        val idx = agentHistory.size
+        agentHistory.add(
+            LLMMessage(
+                role = LLMMessage.Role.USER,
+                content = reminder,
+                contentParts = listOf(AgentContentPart.Text(reminder)),
+            )
+        )
+        lastSoftCompactReminderTokens = contextTokens
+        val sid = activeSessionId
+        viewModelScope.launch(Dispatchers.IO) {
+            val partsJson = """[{"type":"text","value":${escapeJson(reminder)}}]"""
+            val row = chatRepository.appendMessage(sid, "user", partsJson)
+            if (idx < agentHistory.size) {
+                agentHistory[idx] = agentHistory[idx].copy(dbMessageId = row.id)
+            }
+        }
+        AppLogger.info(
+            TAG,
+            "[SoftCompact] reminder appended at ~$contextTokens / $window tokens (soft line $line)",
+        )
+    }
+
     private fun effectiveAgentHistoryUncounted(): List<LLMMessage> {
         val summary = _compactSummary.value
         val marker = _cachedLatestMarker
@@ -5168,6 +5286,10 @@ class ChatViewModel(
         messages: List<LLMMessage>,
         previousSummary: String? = null,
         depth: Int = 0,
+        // [T-ctx-compression-config] The model's emphasis hint. Passed down
+        // unchanged through a split: both halves are summarised under the same
+        // standing prompt.
+        focus: String? = null,
     ): String {
         val transcript = buildConversationTextForSummary(messages)
         val conversationText = if (previousSummary.isNullOrBlank()) {
@@ -5193,7 +5315,7 @@ class ChatViewModel(
             callsIssued = spent,
         )
         return try {
-            generateCompactSummary(conversationText)
+            generateCompactSummary(conversationText, focus)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -5250,7 +5372,7 @@ class ChatViewModel(
      * summary. Throws on provider error so the splitter above can detect
      * context-too-large failures and retry with halved input.
      */
-    private suspend fun generateCompactSummary(conversationText: String): String {
+    private suspend fun generateCompactSummary(conversationText: String, focus: String? = null): String {
         // Wrap the transcript in explicit BEGIN/END framing so the model
         // treats it as material to summarize rather than as a chat turn to
         // continue. Mirrors iOS AIChatViewModel+Compaction.swift
@@ -5262,6 +5384,21 @@ class ChatViewModel(
             append("Compact this conversation into a context summary:\n\n")
             append(conversationText)
             append("\n\n---\nEND OF CONVERSATION TO COMPACT.\n\n")
+            // [T-ctx-compression-config] Present only on the model-requested
+            // path. An emphasis list on top of the standing system prompt; the
+            // must-preserve list still applies.
+            if (!focus.isNullOrBlank()) {
+                append(
+                    "The agent that requested this compaction asked you to emphasise the " +
+                        "following — it is still working on this, so keep the detail needed " +
+                        "to continue:\n"
+                )
+                append(focus.trim())
+                append(
+                    "\n\nTreat these as emphasis points on top of the instructions above, " +
+                        "not as a replacement for them.\n\n"
+                )
+            }
             append(
                 "Now generate a structured context summary following the system prompt " +
                     "instructions. Do NOT continue the conversation above — summarize it. " +
@@ -5560,6 +5697,13 @@ class ChatViewModel(
      * must read the freshly-compacted history.
      */
     private suspend fun inLoopContextCheck(compactionsSoFar: Int): InLoopContextAction {
+        // [T-ctx-compression-config] A compaction the model asked for through
+        // compact_context. Handled here: compactAll refuses to run while the
+        // turn streams (it would rewrite the history the in-flight request was
+        // built against). By now that request is finished and the next one has
+        // not been assembled.
+        val aiRequested = pendingAiCompactRequest
+        val aiFocus = pendingAiCompactFocus
         // [T-ctx-measure-outbound] Judge the request this iteration will send.
         // The provider's count for the previous one is stale the moment a
         // compaction or offload changes the history, and the one-shot "stale"
@@ -5569,14 +5713,48 @@ class ChatViewModel(
         if (tokens <= 0) return InLoopContextAction.PROCEED
         // [T-ctx-user-cap] Same resolution as the pre-send check.
         val (policy, window) = currentContextPolicy() ?: return InLoopContextAction.PROCEED
-        val verdict = policy.check(tokens, window)
+        if (aiRequested) {
+            // Consume the request only here: every early return above leaves it
+            // pending, so it retries next iteration instead of being lost.
+            pendingAiCompactRequest = false
+            pendingAiCompactFocus = null
+        }
+        // A model-requested compaction does not wait for the hard threshold —
+        // the whole point is that the model is better placed to pick the
+        // moment. Everything downstream (bubble sealing, the compactionsSoFar
+        // ceiling, the no-progress measurement) is the ordinary path.
+        val verdict = if (aiRequested) {
+            ContextPolicy.CheckResult.NEEDS_COMPACT
+        } else {
+            policy.check(tokens, window)
+        }
         logContextDecision("in-loop", m, policy.compactThreshold, window, verdict.name)
         return when (verdict) {
-            ContextPolicy.CheckResult.OK -> InLoopContextAction.PROCEED
+            ContextPolicy.CheckResult.OK -> {
+                // [T-ctx-compression-config] The soft line sits below the hard
+                // one, so it fires before the loop decides anything itself.
+                maybeInjectSoftCompactReminder(tokens, window)
+                InLoopContextAction.PROCEED
+            }
 
             ContextPolicy.CheckResult.NEEDS_COMPACT -> {
-                val canCompact = compactionsSoFar < maxInLoopCompactions && !lastInLoopCompactionMadeNoProgress
-                if (!canCompact) return settleWithoutCompacting(m, window, compactionsSoFar)
+                // [T-ctx-compression-config] A model-requested compaction skips
+                // the "last pass made no progress" brake; the compactionsSoFar
+                // ceiling still applies.
+                val canCompact = if (aiRequested) {
+                    compactionsSoFar < maxInLoopCompactions
+                } else {
+                    compactionsSoFar < maxInLoopCompactions && !lastInLoopCompactionMadeNoProgress
+                }
+                if (!canCompact) {
+                    if (aiRequested) {
+                        appendSystemInfo(
+                            text = "Already compacted as often as this turn allows — continuing without compacting.",
+                            iconKind = "compact",
+                        )
+                    }
+                    return settleWithoutCompacting(m, window, compactionsSoFar)
+                }
                 // NOTE: deliberately NOT gated on AutoCompactPrefs. That flag
                 // governs the SEND-time decision (compact silently vs. ask
                 // first) — mid-loop there is nobody to ask, and the alternative
@@ -5587,13 +5765,18 @@ class ChatViewModel(
                 AppLogger.info(
                     TAG,
                     "[AutoCompact] mid-loop compact #${compactionsSoFar + 1}: $tokens / $window tokens " +
-                        "(autoCompactPref=${com.openminis.app.data.AutoCompactPrefs.isEnabled()}, not a gate here)",
+                        "(autoCompactPref=${com.openminis.app.data.AutoCompactPrefs.isEnabled()}, " +
+                        "modelRequested=$aiRequested, focusChars=${aiFocus?.length ?: 0}, not a gate here)",
                 )
                 appendSystemInfo(
-                    text = "Context is filling up ($tokens / $window tokens) — compacting to continue.",
+                    text = if (aiRequested) {
+                        "Compacting context at the agent's request ($tokens / $window tokens)."
+                    } else {
+                        "Context is filling up ($tokens / $window tokens) — compacting to continue."
+                    },
                     iconKind = "compact",
                 )
-                val ok = awaitCompaction()
+                val ok = awaitCompaction(aiFocus)
                 // [T-ctx-measure-outbound] A failed compaction counts as no
                 // progress (parity with iOS) and settles like one: still
                 // sendable if it fits, or once on the raw estimate.
@@ -5687,10 +5870,10 @@ class ChatViewModel(
      * loop cannot simply call it and continue — the next API call would read the
      * pre-compaction history and the guard would fire again immediately.
      */
-    private suspend fun awaitCompaction(): Boolean =
+    private suspend fun awaitCompaction(focus: String? = null): Boolean =
         kotlinx.coroutines.suspendCancellableCoroutine { cont ->
             var resumed = false
-            compactAll(allowDuringProcessing = true) { ok ->
+            compactAll(allowDuringProcessing = true, focus = focus) { ok ->
                 // compactAll guarantees exactly one callback, but guard anyway:
                 // resuming a continuation twice throws.
                 if (!resumed) {
@@ -13170,6 +13353,9 @@ class ChatViewModel(
                     )
                 }
             "memory_get" -> executeMemoryGetTool(argsJson)
+            // [T-ctx-compression-config] The model asking to compact before the
+            // hard threshold makes the decision for it.
+            "compact_context" -> executeCompactContextTool(argsJson)
             else -> ToolExecutionResult("Unknown tool: $name", false)
         }
     }
@@ -14531,6 +14717,62 @@ class ChatViewModel(
             keywords = keywords,
         )
         return ToolExecutionResult(result.output, result.success, toolTitle = result.toolTitle)
+    }
+
+    /**
+     * [T-ctx-compression-config] The model's `compact_context` call.
+     *
+     * Records the request only; [inLoopContextCheck] runs the compaction at the
+     * top of the next iteration, where compactAll may run. The tool result says
+     * so, so the model does not retry.
+     */
+    private fun executeCompactContextTool(argsJson: String): ToolExecutionResult {
+        val o = runCatching { JSONObject(argsJson) }.getOrElse { JSONObject() }
+        val toolTitle = o.optString("tool_title", "").ifEmpty { "compact context" }
+        val focus = o.optString("focus", "").trim().takeIf { it.isNotEmpty() }
+
+        if (isHelper) {
+            // A helper compacts on its threshold; its brief is what a summary
+            // would have to preserve.
+            return ToolExecutionResult(
+                "Compaction is not available inside a sub agent — finish the task and report back.",
+                false, toolTitle = toolTitle,
+            )
+        }
+        if (_isCompacting.value) {
+            return ToolExecutionResult(
+                "A compaction is already running. Carry on — it will finish before your next request.",
+                false, toolTitle = toolTitle,
+            )
+        }
+        if (pendingAiCompactRequest) {
+            return ToolExecutionResult(
+                "A compaction is already queued for your next request — carry on.",
+                true, toolTitle = toolTitle,
+            )
+        }
+        if (agentHistory.size < 4) {
+            return ToolExecutionResult(
+                "Nothing to compact yet — the conversation is still short. Keep working.",
+                false, toolTitle = toolTitle,
+            )
+        }
+
+        pendingAiCompactRequest = true
+        pendingAiCompactFocus = focus
+        AppLogger.info(
+            TAG,
+            "[Compact] model requested compaction (focus=${focus?.length ?: 0} chars, historySize=${agentHistory.size})",
+        )
+        return ToolExecutionResult(
+            "Context compaction queued" +
+                (focus?.let { " (focus: \"${it.take(200)}\")" } ?: "") +
+                ". It runs before your next model call: the earlier conversation is replaced by a " +
+                "summary that preserves the points you highlighted, the most recent turns stay " +
+                "verbatim, and you continue in this same session. Keep working — do not restart the " +
+                "task or re-read files afterwards.",
+            true, toolTitle = toolTitle,
+        )
     }
 
     // ─── UI Helpers ──────────────────────────────────────────────────────
