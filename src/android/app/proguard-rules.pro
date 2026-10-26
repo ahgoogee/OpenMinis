@@ -26,3 +26,17 @@
 # NOTE FOR VERIFICATION: debug builds don't minify, so this bug is invisible
 # there. Any change here must be checked against an assembleRelease APK.
 -keep class io.codeconcept.realtimecutvadlibrary.** { *; }
+
+# [T-build-rclone-aar] The rclone aar is rebuilt on-device from the official
+# release dex, which R8 had already minified — so the classes it references
+# include that build's synthesised outlining holders, which do not exist here.
+# `go.Seq$Ref` reaches them only while building its "Ref instantiated with a
+# Go refnum" RuntimeException, so no working path needs them.
+#
+# THESE NAMES CHANGE WITH EVERY OFFICIAL RELEASE: 1.14 was T.a + b3.g,
+# 1.15 is S.a. When R8 fails with "Missing class X (referenced from: void
+# go.Seq$Ref.<init>…)", add that name — the AGP also writes it to
+# app/build/outputs/mapping/<variant>/missing_rules.txt.
+-dontwarn T.a
+-dontwarn b3.g
+-dontwarn S.a

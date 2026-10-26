@@ -32,12 +32,32 @@ android {
     // Build.VERSION.SDK_INT >= 36 (see DynamicIslandSupport / AgentForegroundService).
     compileSdk = 36
 
+    // [T-release-signing] The release line signs with a dedicated keystore that
+    // lives outside the repo; `keystore.properties` (gitignored, next to this
+    // file) points at it. If that file is absent the release build falls back
+    // to the debug keystore, so a fresh clone of the fork still assembles.
+    val keystoreProps = Properties().apply {
+        val f = rootProject.file("keystore.properties")
+        if (f.exists()) f.inputStream().use { load(it) }
+    }
+
+    signingConfigs {
+        if (keystoreProps.isNotEmpty()) {
+            create("release") {
+                storeFile = file(keystoreProps.getProperty("storeFile"))
+                storePassword = keystoreProps.getProperty("storePassword")
+                keyAlias = keystoreProps.getProperty("keyAlias")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+            }
+        }
+    }
+
     defaultConfig {
-        applicationId = "com.openminis.app"
+        applicationId = "com.openminis.app.cc"
         minSdk = 26
         targetSdk = 35
-        versionCode = 35
-        versionName = "1.15-beta.6"
+        versionCode = 20115
+        versionName = "1.15-cc1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -70,20 +90,20 @@ android {
             abiFilters += listOf("arm64-v8a")
         }
 
-        externalNativeBuild {
-            cmake {
-                cppFlags += "-std=c++17"
-                arguments += "-DANDROID_STL=c++_shared"
-            }
-        }
+        // externalNativeBuild {
+        //     cmake {
+        //         cppFlags += "-std=c++17"
+        //         arguments += "-DANDROID_STL=c++_shared"
+        //     }
+        // }
     }
 
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
-        }
-    }
+    // externalNativeBuild {
+    //     cmake {
+    //         path = file("src/main/cpp/CMakeLists.txt")
+    //         version = "3.22.1"
+    //     }
+    // }
 
     buildTypes {
         getByName("debug") {
@@ -126,7 +146,15 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = if (keystoreProps.isNotEmpty()) {
+                signingConfigs.getByName("release")
+            } else {
+                logger.warn(
+                    "keystore.properties 缺失 —— release 包会用 debug 密钥签名，" +
+                        "装上后无法覆盖更新正式版"
+                )
+                signingConfigs.getByName("debug")
+            }
         }
     }
 

@@ -1,5 +1,9 @@
 pluginManagement {
     repositories {
+        // Aliyun mirrors first: Maven Central returns 403 for this device's IP.
+        maven("https://maven.aliyun.com/repository/gradle-plugin")
+        maven("https://maven.aliyun.com/repository/google")
+        maven("https://maven.aliyun.com/repository/public")
         google()
         mavenCentral()
         gradlePluginPortal()
@@ -9,6 +13,9 @@ pluginManagement {
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
+        // Aliyun mirrors first: Maven Central returns 403 for this device's IP.
+        maven("https://maven.aliyun.com/repository/google")
+        maven("https://maven.aliyun.com/repository/public")
         google()
         mavenCentral()
         // [T-android-vad] RealTimeCutVADLibraryForAndroid ships via JitPack
