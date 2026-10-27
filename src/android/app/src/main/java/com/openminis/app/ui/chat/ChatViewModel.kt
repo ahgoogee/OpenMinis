@@ -29,6 +29,8 @@ import com.openminis.app.data.ContextPolicy
 import com.openminis.app.data.ContextSizeMeter
 import com.openminis.app.data.PayloadSizeAudit
 import com.openminis.app.logging.AppLogger
+import com.openminis.app.hooks.ChatHooks
+import com.openminis.app.hooks.HookDecision
 import com.openminis.app.data.FileMentionIndex
 import com.openminis.app.data.db.CompactMarkerEntity
 import com.openminis.app.data.model.AgentContentPart
@@ -6019,10 +6021,19 @@ class ChatViewModel(
      * loop cannot simply call it and continue — the next API call would read the
      * pre-compaction history and the guard would fire again immediately.
      */
-    private suspend fun awaitCompaction(focus: String? = null): Boolean =
-        kotlinx.coroutines.suspendCancellableCoroutine { cont ->
+    private suspend fun awaitCompaction(focus: String? = null): Boolean {
+        // [T-hooks] PreCompact may add to the focus ("the summary must keep X").
+        // It can never block: there is no alternative to compacting once the
+        // line is crossed, so a hook that says block is simply logged.
+        val tokensBefore = contextMeasurement().measured
+        val window = currentContextPolicy()?.second ?: 0
+        val hookedFocus = runCatching {
+            ChatHooks.preCompact(activeSessionId, tokensBefore, window, focus, "auto")
+        }.getOrNull() ?: focus
+
+        val ok = kotlinx.coroutines.suspendCancellableCoroutine { cont ->
             var resumed = false
-            compactAll(allowDuringProcessing = true, focus = focus) { ok ->
+            compactAll(allowDuringProcessing = true, focus = hookedFocus) { ok ->
                 // compactAll guarantees exactly one callback, but guard anyway:
                 // resuming a continuation twice throws.
                 if (!resumed) {
@@ -6031,6 +6042,21 @@ class ChatViewModel(
                 }
             }
         }
+        // [T-hooks] PostCompact: the cleanest moment to capture a "after the
+        // rewrite" snapshot, and where any token-watermark throttling outside
+        // the app has to reset.
+        runCatching {
+            ChatHooks.postCompact(
+                sessionId = activeSessionId,
+                beforeTokens = tokensBefore,
+                afterTokens = contextMeasurement().measured,
+                messagesCompacted = 0,
+                success = ok,
+                trigger = "auto",
+            )
+        }
+        return ok
+    }
 
     /**
      * System prompt for the single-shot summarisation call. Matches iOS
@@ -6113,6 +6139,10 @@ class ChatViewModel(
     private val recentlyFailedEntryIds = java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
     init {
+        // [T-hooks] Load /var/minis/shared/hooks/hooks.json lazily (fingerprint
+        // cached; a missing file is not an error). Doing it here means the very
+        // first event of the first turn already sees the config.
+        runCatching { ChatHooks.init(context) }
         loadSession()
         // [T-android-context-usage-hint] Loop-END path for the usage line.
         //
@@ -6137,6 +6167,17 @@ class ChatViewModel(
                     return@collect
                 }
                 publishContextUsage(crossingOnly = false)
+                // [T-hooks] Stop: one notification per finished turn. A cancelled
+                // turn is excluded above (it returns early), matching the usage
+                // line's reasoning: the user abandoned it on purpose.
+                if (!isHelper) {
+                    ChatHooks.stop(
+                        sessionId = activeSessionId,
+                        turns = 0,
+                        messageCount = agentHistory.size,
+                        cancelled = false,
+                    )
+                }
             }
         }
         // [T-android-thinking-row-follows-run] Same edge, for the thinking
@@ -13862,11 +13903,28 @@ class ChatViewModel(
                         // partial output; a waiting delegation moves to the
                         // background (delegateDetach) and is not interrupted.
                         val isDelegation = name == com.openminis.app.agent.jobs.HelperRunner.TOOL_NAME
+                        // [T-hooks] PreToolUse: a configured hook may refuse this
+                        // call before it runs, or rewrite its arguments. Same
+                        // helper/sub-agent exclusion as compact_context and
+                        // user_ask — a child must not be able to change what the
+                        // parent's hooks see, and vice versa.
+                        val preHook = if (isHelper) {
+                            HookDecision()
+                        } else {
+                            ChatHooks.beforeTool(context, activeSessionId, turn, name, argsStr)
+                        }
+                        val effectiveArgs = preHook.toolArgsJson ?: argsStr
                         val toolRun = foregroundTools.run(
                             id, name,
                             cancellable = name != "shell_execute" && !isDelegation,
                             onInterrupted = { ToolExecutionResult(ForegroundToolInterrupts.INTERRUPTED_RESULT, false) },
-                        ) { executeTool(name, argsStr, id, allToolBlocks, assistantId, accumulatedText) }
+                        ) {
+                            if (preHook.block) {
+                                ToolExecutionResult(preHook.reason, false, toolTitle = name)
+                            } else {
+                                executeTool(name, effectiveArgs, id, allToolBlocks, assistantId, accumulatedText)
+                            }
+                        }
                         val toolInterrupted = toolRun.interrupted && !isDelegation
                         val result = if (toolInterrupted && toolRun.value.output != ForegroundToolInterrupts.INTERRUPTED_RESULT) {
                             toolRun.value.copy(output = ForegroundToolInterrupts.withInterruptNote(toolRun.value.output), success = false)
@@ -13897,11 +13955,33 @@ class ChatViewModel(
                         // [T-tool-title-reminder] Same channel as the loop warning:
                         // the detector counts titled calls with no tool_title and
                         // hands back the soft reminder on the 1st, 11th, 21st… of them.
+                        // [T-hooks] PostToolUse: whatever it appends rides along
+                        // with the result the model sees — the same channel the
+                        // loop warning and the tool-title reminder already use,
+                        // so ordering stays predictable for the model.
+                        val hookAppend = if (isHelper) {
+                            null
+                        } else {
+                            ChatHooks.afterTool(
+                                context = context,
+                                sessionId = activeSessionId,
+                                turn = turn,
+                                toolName = name,
+                                argsJson = effectiveArgs,
+                                success = result.success,
+                                output = outputWithLoopWarning,
+                            ).appendContext
+                        }
+                        val baseOutput = if (hookAppend.isNullOrBlank()) {
+                            outputWithLoopWarning
+                        } else {
+                            outputWithLoopWarning + "\n\n" + hookAppend
+                        }
                         val outputForLLM = if (toolLoopDetector.recordToolTitle(args, name in titledTools) != null) {
                             Log.i(TAG, "[ToolTitleReminder] $name came back without tool_title — soft reminder appended")
-                            ToolTitleReminder.appending(outputWithLoopWarning)
+                            ToolTitleReminder.appending(baseOutput)
                         } else {
-                            outputWithLoopWarning
+                            baseOutput
                         }
 
                         val blockIdx = allToolBlocks.indexOfFirst { it.id == id }
@@ -14028,6 +14108,23 @@ class ChatViewModel(
 
             // Add tool results to history
             agentHistory.add(ToolResultWrap.historyMessage(resultParts, toolResultDbId))
+
+            // [T-hooks] AfterAssistantOutput: one cheap tick per iteration. The
+            // payload carries facts only — the script reads the body from the
+            // turn ledger by sessionId. Async by construction: `fire` returns
+            // immediately, throttles by minIntervalSec and drops a tick while
+            // the previous one for this hook+session is still running, so a
+            // long tool-heavy turn cannot pay for it more than once per window.
+            if (!isHelper) {
+                ChatHooks.afterAssistantOutput(
+                    sessionId = activeSessionId,
+                    turn = turn,
+                    assistantChars = accumulatedText.length,
+                    messageCount = agentHistory.size,
+                    toolCalls = toolCalls.size,
+                    textProduced = accumulatedText.isNotEmpty(),
+                )
+            }
 
             // Auto-title after first exchange (mirrors iOS generateSessionTitleIfNeeded)
             if (turn == 0) {
